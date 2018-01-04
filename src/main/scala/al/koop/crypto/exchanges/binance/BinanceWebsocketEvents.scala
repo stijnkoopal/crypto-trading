@@ -1,28 +1,32 @@
-package al.koop.crypto.binance
+package al.koop.crypto.exchanges.binance
 
-import java.util.Date
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
 
 import io.circe.{Decoder, HCursor}
 
 object BinanceWebsocketEvents {
 
-  case class TradeEvent(eventTime: Date, // E
+  private def toLocalDate(epoch: Long) = LocalDateTime.ofInstant(Instant.ofEpochMilli(epoch), ZoneId.systemDefault)
+
+  case class TradeEvent(eventTime: LocalDateTime, // E
                         symbol: String, // s
                         aggregatedTradeId: Long, // a
                         price: BigDecimal, // p
                         quantity: BigDecimal, // q
                         firstBreakdownId: Long, // f
                         lastBreakdownId: Long, // l
-                        tradeTime: Date, // T
+                        tradeTime: LocalDateTime, // T
                         maker: Boolean, // m
                        )
 
-  case class KlineEvent(eventTime: Date, // E
+  case class KlineEvent(eventTime: LocalDateTime, // E
                         symbol: String, // s
                         transaction: KlineTransaction // k
                        )
-  case class KlineTransaction(startTime: Date, // t
-                              endTime: Date, // T
+  case class KlineTransaction(startTime: LocalDateTime, // t
+                              endTime: LocalDateTime, // T
                               symbol: String, // s
                               interval: String, // i
                               priceOpen: BigDecimal, // o
@@ -36,7 +40,7 @@ object BinanceWebsocketEvents {
 
   case class DepthDelta(price: BigDecimal, quantity: BigDecimal)
 
-  case class DepthEvent(eventTime: Date, // E
+  case class DepthEvent(eventTime: LocalDateTime, // E
                         symbol: String, // s
                         updateId: Long, // u
                         bidDelta: List[DepthDelta], // b
@@ -56,7 +60,7 @@ object BinanceWebsocketEvents {
 
     } yield {
       DepthEvent(
-        new Date(eventTime),
+        toLocalDate(eventTime),
         symbol,
         updateId,
         bidDelta.map(x => DepthDelta(BigDecimal(x.head.left.get), BigDecimal(x(1).left.get))),
@@ -70,7 +74,7 @@ object BinanceWebsocketEvents {
       symbol <- c.downField("s").as[String]
       transaction <- c.downField("k").as[KlineTransaction]
     } yield {
-      KlineEvent(new Date(eventTime), symbol, transaction)
+      KlineEvent(toLocalDate(eventTime), symbol, transaction)
     }
 
   implicit val decodeKlineTransaction: Decoder[KlineTransaction] = (c: HCursor) =>
@@ -88,8 +92,8 @@ object BinanceWebsocketEvents {
       finalized <- c.downField("x").as[Boolean]
     } yield {
       KlineTransaction(
-        new Date(startTime),
-        new Date(endTime),
+        toLocalDate(startTime),
+        toLocalDate(endTime),
         symbol,
         interval,
         priceOpen,
@@ -114,14 +118,14 @@ object BinanceWebsocketEvents {
       maker <- c.downField("m").as[Boolean]
     } yield {
       TradeEvent(
-        new Date(eventTime),
+        toLocalDate(eventTime),
         symbol,
         aggregatedTradeId,
         price,
         quantity,
         firstBreakdownId,
         lastBreakdownId,
-        new Date(tradeTime),
+        toLocalDate(tradeTime),
         maker)
     }
 }

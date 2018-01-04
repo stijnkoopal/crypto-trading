@@ -1,11 +1,12 @@
-package al.koop.crypto.binance
+package al.koop.crypto.exchanges.binance
 
 import java.net.URI
 
-import al.koop.crypto.binance.BinanceWebsocketEvents.{DepthEvent, KlineEvent, TradeEvent}
-import al.koop.websocket.rx.{Message, WebSocket}
+import al.koop.crypto.exchanges.binance.BinanceWebsocketEvents.{DepthEvent, KlineEvent, TradeEvent}
+import al.koop.crypto.websocket.rx.{Message, WebSocket}
 import org.java_websocket.drafts.Draft_6455
 import io.circe.parser.decode
+import org.knowm.xchange.currency.CurrencyPair
 import rx.lang.scala.Observable
 
 class BinanceWebsocketClient private (private val baseUrl: String, private val currencyPair: String) {
@@ -41,6 +42,6 @@ class BinanceWebsocketClient private (private val baseUrl: String, private val c
 }
 
 object BinanceWebsocketClient {
-  def apply(currencyPair: String) =
-    new BinanceWebsocketClient("wss://stream.binance.com:9443/ws", currencyPair)
+  def apply(currencyPair: CurrencyPair) =
+    new BinanceWebsocketClient("wss://stream.binance.com:9443/ws", s"${currencyPair.base.getCurrencyCode}${currencyPair.counter.getCurrencyCode}".toLowerCase())
 }

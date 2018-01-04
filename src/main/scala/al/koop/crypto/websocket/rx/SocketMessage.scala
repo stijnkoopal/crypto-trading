@@ -1,4 +1,4 @@
-package al.koop.websocket.rx
+package al.koop.crypto.websocket.rx
 
 import org.java_websocket.handshake.ServerHandshake
 

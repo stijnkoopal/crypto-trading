@@ -32,5 +32,6 @@ libraryDependencies ++= Seq(
 )
 
 libraryDependencies ++= Seq(
-  "org.knowm.xchange" % "xchange-binance" % "4.3.1"
+  "org.knowm.xchange" % "xchange-binance" % "4.3.1",
+  "org.knowm.xchange" % "xchange-bittrex" % "4.3.1"
 )
