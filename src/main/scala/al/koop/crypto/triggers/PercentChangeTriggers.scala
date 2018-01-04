@@ -2,11 +2,12 @@ package al.koop.crypto.triggers
 
 import al.koop.crypto.Crypto.Percentage
 import al.koop.crypto.PriceChangeEvent
+import org.knowm.xchange.dto.Order.OrderType
 import rx.lang.scala.Observable
 
 import scala.concurrent.duration._
 
-class PercentChangeTrigger(val timeSpan: Duration, percentChange: Percentage)  {
+class PercentChangeTrigger(val timeSpan: Duration, percentChange: Percentage, orderType: OrderType)  {
   private val openings: Observable[Long] = Observable.interval(0 seconds, 2 seconds)
   private val closings = (_: Long) => Observable.timer(timeSpan)
 
@@ -16,5 +17,5 @@ class PercentChangeTrigger(val timeSpan: Duration, percentChange: Percentage)  {
       .filter { case (start, end) => calculateChange(start, end) > percentChange}
       .map { case (_, end) => end }
 
-  private def calculateChange(start: PriceChangeEvent, end: PriceChangeEvent) = (end.price / start.price) - 1
+  private def calculateChange(start: PriceChangeEvent, end: PriceChangeEvent) = (end.price(orderType) / start.price(orderType)) - 1
 }
