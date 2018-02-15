@@ -9,11 +9,21 @@
         </layout>
     </appender>
 
+    <appender name="FILE" class="ch.qos.logback.core.FileAppender">
+        <file>./application.log</file>
+        <layout class="ch.qos.logback.classic.PatternLayout">
+            <Pattern>
+                %d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n
+            </Pattern>
+        </layout>
+    </appender>
+
     <root level="info">
         <appender-ref ref="STDOUT" />
     </root>
 
-    <logger name="al.koop.crypto" level="debug" additivity="false">
+    <logger name="al.koop.crypto" level="INFO" additivity="false">
         <appender-ref ref="STDOUT" />
+        <!--<appender-ref ref="FILE" />-->
     </logger>
 </configuration>
