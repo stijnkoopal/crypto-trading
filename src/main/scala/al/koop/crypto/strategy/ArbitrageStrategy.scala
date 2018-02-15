@@ -5,6 +5,8 @@ import org.knowm.xchange.currency.{Currency, CurrencyPair}
 import org.knowm.xchange.dto.Order.{OrderStatus, OrderType}
 import org.knowm.xchange.dto.account.Balance
 import org.knowm.xchange.dto.trade.LimitOrder
+import org.knowm.xchange.service.account.AccountService
+import org.knowm.xchange.service.trade.TradeService
 import org.slf4j.LoggerFactory
 import rx.Scheduler
 import rx.lang.scala.Observable
@@ -130,53 +132,6 @@ class ArbitrageStrategy(val detector: ArbitrageDetector,
       .map(_.trade)
   }
 
-  private def trade(trade: ArbitrageTrade): (ArbitrageTrade, Option[InTrade]) = {
-    logger.info(s"Trading ${trade.buyOrder.getCurrencyPair}")
-    logger.debug(s"Buy order ${trade.buyOrder}, buy on ${trade.buyFrom}")
-    logger.debug(s"Sell order ${trade.sellOrder}, sell on ${trade.sellFrom}")
-
-    if (!paperTrade) {
-      val buyOrderId = trade.buyFrom.getTradeService.placeLimitOrder(trade.buyOrder)
-      val sellOrderId = trade.sellFrom.getTradeService.placeLimitOrder(trade.sellOrder)
-
-      (trade, Some(InTrade(buyOrderId, sellOrderId, trade)))
-    } else
-      (trade, None)
-  }
-
-  private def checkTrades(inTrade: InTrade) = {
-    val buyOrder = inTrade.trade.buyFrom.getTradeService.getOrder(inTrade.buyOrderId).asScala.headOption
-    val sellOrder = inTrade.trade.sellFrom.getTradeService.getOrder(inTrade.sellOrderId).asScala.headOption
-
-    if (buyOrder.isEmpty || sellOrder.isEmpty) {
-      logger.info(inTrade.toString)
-      throw new Exception(s"In invalid state, orders could not be found for ${inTrade.trade.arbitrage.currencyPair}")
-    }
-
-    if (buyOrder.get.getStatus != OrderStatus.FILLED || sellOrder.get.getStatus != OrderStatus.FILLED) {
-      logger.info(inTrade.toString)
-      throw new Exception(s"In invalid state, orders not filled for ${inTrade.trade.arbitrage.currencyPair}")
-    }
-
-    inTrade.trade
-  }
-
-  private def exchangeCurrencies(trade: ArbitrageTrade) = {
-    val pair = trade.sellOrder.getCurrencyPair
-    val counterDepositAddress = trade.buyFrom.getAccountService.requestDepositAddress(pair.counter)
-    val baseDepositAddress = trade.sellFrom.getAccountService.requestDepositAddress(pair.base)
-
-    val baseAmount = availableBalance(trade.buyFrom, pair.base)
-    val counterAmount = availableBalance(trade.sellFrom, pair.counter)
-
-    trade.buyFrom.getAccountService.withdrawFunds(pair.base, (baseAmount * 0.5).bigDecimal, baseDepositAddress)
-    trade.sellFrom.getAccountService.withdrawFunds(pair.counter, (counterAmount * 0.5).bigDecimal, counterDepositAddress)
-
-    // TODO: fee
-
-    Exchanging(trade, baseAmount * 0.5, counterAmount * 0.5)
-  }
-
   private def buildTrade(detectedArbitrage: DetectedArbitrage): (DetectedArbitrage, Option[ArbitrageTrade]) = {
     // TODO: fee
     val buyPrice = detectedArbitrage.ask * (1 + priceSlackPercentage)
@@ -216,13 +171,51 @@ class ArbitrageStrategy(val detector: ArbitrageDetector,
     (detectedArbitrage, Some(trade))
   }
 
-  private def tradeAmount(detectedArbitrage: DetectedArbitrage): BigDecimal = {
-    val counterBalance =  availableBalance(detectedArbitrage.buyFrom, detectedArbitrage.currencyPair.counter) // ETH available to buy ADX
-    val baseBalance = availableBalance(detectedArbitrage.sellFrom, detectedArbitrage.currencyPair.base) // ADX available to sell for ETH
+  private def trade(trade: ArbitrageTrade): (ArbitrageTrade, Option[InTrade]) = {
+    logger.info(s"Trading ${trade.buyOrder.getCurrencyPair}")
+    logger.debug(s"Buy order ${trade.buyOrder}, buy on ${trade.buyFrom}")
+    logger.debug(s"Sell order ${trade.sellOrder}, sell on ${trade.sellFrom}")
 
-    val askWithSlack = detectedArbitrage.ask * (1 + priceSlackPercentage)
+    if (!paperTrade) {
+      val buyOrderId = getTradeService(trade.buyFrom).placeLimitOrder(trade.buyOrder)
+      val sellOrderId = getTradeService(trade.sellFrom).placeLimitOrder(trade.sellOrder)
 
-    (baseBalance / askWithSlack).min(counterBalance)
+      (trade, Some(InTrade(buyOrderId, sellOrderId, trade)))
+    } else
+      (trade, None)
+  }
+
+  private def checkTrades(inTrade: InTrade) = {
+    val buyOrder = getTradeService(inTrade.trade.buyFrom).getOrder(inTrade.buyOrderId).asScala.headOption
+    val sellOrder = getTradeService(inTrade.trade.sellFrom).getOrder(inTrade.sellOrderId).asScala.headOption
+
+    if (buyOrder.isEmpty || sellOrder.isEmpty) {
+      logger.info(inTrade.toString)
+      throw new Exception(s"In invalid state, orders could not be found for ${inTrade.trade.arbitrage.currencyPair}")
+    }
+
+    if (buyOrder.get.getStatus != OrderStatus.FILLED || sellOrder.get.getStatus != OrderStatus.FILLED) {
+      logger.info(inTrade.toString)
+      throw new Exception(s"In invalid state, orders not filled for ${inTrade.trade.arbitrage.currencyPair}")
+    }
+
+    inTrade.trade
+  }
+
+  private def exchangeCurrencies(trade: ArbitrageTrade) = {
+    val pair = trade.sellOrder.getCurrencyPair
+    val counterDepositAddress = getAccountService(trade.buyFrom).requestDepositAddress(pair.counter)
+    val baseDepositAddress = getAccountService(trade.sellFrom).requestDepositAddress(pair.base)
+
+    val baseAmount = availableBalance(trade.buyFrom, pair.base)
+    val counterAmount = availableBalance(trade.sellFrom, pair.counter)
+
+    getAccountService(trade.buyFrom).withdrawFunds(pair.base, (baseAmount * 0.5).bigDecimal, baseDepositAddress)
+    getAccountService(trade.sellFrom).withdrawFunds(pair.counter, (counterAmount * 0.5).bigDecimal, counterDepositAddress)
+
+    // TODO: fee
+
+    Exchanging(trade, baseAmount * 0.5, counterAmount * 0.5)
   }
 
   protected def availableBalance(exchange: Exchange, currency: Currency): BigDecimal =
@@ -245,4 +238,7 @@ class ArbitrageStrategy(val detector: ArbitrageDetector,
     balances.add(exchanging.trade.sellFrom, exchanging.trade.arbitrage.currencyPair.base, exchanging.baseAmount)
     balances.add(exchanging.trade.buyFrom, exchanging.trade.arbitrage.currencyPair.counter, exchanging.counterAmount)
   }
+
+  private def getAccountService(exchange: Exchange): AccountService = exchange.getAccountService
+  private def getTradeService(exchange: Exchange): TradeService = exchange.getTradeService
 }
