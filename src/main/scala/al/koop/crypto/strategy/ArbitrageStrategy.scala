@@ -12,10 +12,9 @@ import rx.Scheduler
 import rx.lang.scala.Observable
 import rx.schedulers.Schedulers
 
+import scala.collection.JavaConverters._
 import scala.collection.mutable
 import scala.concurrent.duration._
-import scala.collection.JavaConverters._
-import scala.collection.parallel.immutable
 
 sealed trait State
 case object Available extends State
@@ -102,8 +101,10 @@ class ArbitrageStrategy(val detector: ArbitrageDetector,
                         val tradeFees: Map[(Exchange, CurrencyPair), BigDecimal => BigDecimal],
                         val withdrawalFees: Map[(Exchange, Currency), BigDecimal => BigDecimal],
                         val balances: BalancesContainer = new DirectToExchangeBalancesContainer,
-                        val paperTrade: Boolean = true,
-                        val priceSlackPercentage: BigDecimal = 0.002)(implicit scheduler: Scheduler = Schedulers.computation()) {
+                        val accountServiceProxy: AccountService => AccountService = _,
+                        val tradeServiceProxy: TradeService => TradeService = _,
+                        val priceSlackPercentage: BigDecimal = 0.002)
+                       (implicit scheduler: Scheduler = Schedulers.computation()) {
 
   private val logger = LoggerFactory.getLogger(getClass)
   private val state: mutable.Map[CurrencyPair, State] = mutable.Map()
@@ -116,8 +117,6 @@ class ArbitrageStrategy(val detector: ArbitrageDetector,
       .doOnEach(x => if (x._2.isEmpty) this.state.put(x._1.currencyPair, Available))
       .collect { case (_, Some(x)) => x }
       .map(this.trade)
-      .doOnEach(x => if (x._2.isEmpty) this.state.put(x._1.sellOrder.getCurrencyPair, Available))
-      .collect { case (_, Some(x)) => x }
       .doOnEach(x => this.state.put(x.trade.arbitrage.currencyPair, Trading))
       .flatMap(a => Observable.timer(5 seconds).map(_ => a))
       .map(this.checkTrades)
@@ -171,18 +170,15 @@ class ArbitrageStrategy(val detector: ArbitrageDetector,
     (detectedArbitrage, Some(trade))
   }
 
-  private def trade(trade: ArbitrageTrade): (ArbitrageTrade, Option[InTrade]) = {
+  private def trade(trade: ArbitrageTrade): InTrade = {
     logger.info(s"Trading ${trade.buyOrder.getCurrencyPair}")
     logger.debug(s"Buy order ${trade.buyOrder}, buy on ${trade.buyFrom}")
     logger.debug(s"Sell order ${trade.sellOrder}, sell on ${trade.sellFrom}")
 
-    if (!paperTrade) {
-      val buyOrderId = getTradeService(trade.buyFrom).placeLimitOrder(trade.buyOrder)
-      val sellOrderId = getTradeService(trade.sellFrom).placeLimitOrder(trade.sellOrder)
+    val buyOrderId = getTradeService(trade.buyFrom).placeLimitOrder(trade.buyOrder)
+    val sellOrderId = getTradeService(trade.sellFrom).placeLimitOrder(trade.sellOrder)
 
-      (trade, Some(InTrade(buyOrderId, sellOrderId, trade)))
-    } else
-      (trade, None)
+    InTrade(buyOrderId, sellOrderId, trade)
   }
 
   private def checkTrades(inTrade: InTrade) = {
@@ -239,6 +235,9 @@ class ArbitrageStrategy(val detector: ArbitrageDetector,
     balances.add(exchanging.trade.buyFrom, exchanging.trade.arbitrage.currencyPair.counter, exchanging.counterAmount)
   }
 
-  private def getAccountService(exchange: Exchange): AccountService = exchange.getAccountService
-  private def getTradeService(exchange: Exchange): TradeService = exchange.getTradeService
+  private def getAccountService(exchange: Exchange): AccountService =
+    accountServiceProxy(exchange.getAccountService)
+
+  private def getTradeService(exchange: Exchange): TradeService =
+    tradeServiceProxy(exchange.getTradeService)
 }
