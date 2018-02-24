@@ -2,6 +2,7 @@ package al.koop.crypto.strategy
 
 import java.time.LocalDateTime
 import java.time.LocalDateTime.now
+import java.util.Date
 
 import al.koop.crypto.CryptoStreaming
 import org.knowm.xchange.Exchange
@@ -62,7 +63,7 @@ class SingleCurrencyArbitrageDetector(val currencyPair: CurrencyPair,
     val priceDiff1 = priceDiff(t1._1.getBid, t2._1.getAsk)
     val priceDiff2 = priceDiff(t2._1.getBid, t1._1.getAsk)
 
-    logger.debug(s"Checking pair $pair, ask=${t1._1.getAsk}/bid=${t1._1.getBid} on ${t1._2.getExchangeSpecification.getExchangeName}; ask=${t2._1.getAsk}/bid=${t2._1.getBid} on ${t2._2.getExchangeSpecification.getExchangeName}. Differences: $priceDiff1 and $priceDiff2")
+//    logger.debug(s"Checking pair $pair, ask=${t1._1.getAsk}/bid=${t1._1.getBid} on ${t1._2.getExchangeSpecification.getExchangeName}; ask=${t2._1.getAsk}/bid=${t2._1.getBid} on ${t2._2.getExchangeSpecification.getExchangeName}. Differences: $priceDiff1 and $priceDiff2")
 
     if (priceDiff1 >= diff)
       Some(DetectedArbitrage(now(), pair, ask = t2._1.getAsk, buyFrom = t2._2, bid = t1._1.getBid, sellFrom = t1._2, priceDiff1))
@@ -74,6 +75,39 @@ class SingleCurrencyArbitrageDetector(val currencyPair: CurrencyPair,
       None
   }
 }
+
+class SimulatedSingleCurrencyArbitrageDetector(currencyPair: CurrencyPair,
+                                               exchange1: Exchange,
+                                               exchange2: Exchange,
+                                               diff: BigDecimal = 0.05) extends SingleCurrencyArbitrageDetector(currencyPair, exchange1, exchange2, diff, 0 seconds) {
+  val basePrice = BigDecimal(0.12)
+  override def detect(): Observable[DetectedArbitrage] = {
+    val ticker1 = Observable.interval(1 seconds)
+        .map(_ => {
+          val ticker = new Ticker.Builder()
+            .ask(basePrice.bigDecimal)
+            .bid(basePrice.bigDecimal)
+            .currencyPair(currencyPair)
+            .build()
+          (ticker, exchange1)
+        })
+
+    val ticker2 = Observable.interval(1 seconds)
+      .map(_ => {
+        val ticker = new Ticker.Builder()
+          .ask((basePrice / 1.05).bigDecimal)
+          .bid(basePrice.bigDecimal)
+          .currencyPair(currencyPair)
+          .build()
+        (ticker, exchange2)
+      })
+
+    ticker1.combineLatest(ticker2)
+      .map(e => isValidTrade(e._1, e._2))
+      .collect { case Some(x) => x }
+  }
+}
+
 
 class MultiCurrencyArbitrageDetector(val exchange1: Exchange,
                                      val exchange2: Exchange,

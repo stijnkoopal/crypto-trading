@@ -36,18 +36,18 @@ case class InTrade(buyOrderId: String, sellOrderId: String, trade: ArbitrageTrad
 case class Exchanging(trade: ArbitrageTrade, baseAmount: BigDecimal, counterAmount: BigDecimal)
 
 trait BalancesContainer {
-  def getBalance(wallet: Wallet, currency: Currency): Option[Balance]
+  def getBalance(exchange: Exchange, currency: Currency): Option[Balance]
 
-  def subtract(wallet: Wallet, currency: Currency, amount: BigDecimal): Unit
-  def add(wallet: Wallet, currency: Currency, amount: BigDecimal): Unit
+  def subtract(exchange: Exchange, currency: Currency, amount: BigDecimal): Unit
+  def add(exchange: Exchange, currency: Currency, amount: BigDecimal): Unit
 }
 
 class DirectToExchangeBalancesContainer extends BalancesContainer {
-  override def getBalance(wallet: Wallet, currency: Currency): Option[Balance] =
-    Some(wallet.getBalance(currency))
+  override def getBalance(exchange: Exchange, currency: Currency): Option[Balance] =
+    Some(exchange.getAccountService.getAccountInfo.getWallet().getBalance(currency))
 
-  override def subtract(wallet: Wallet, currency: Currency, amount: BigDecimal): Unit = ()
-  override def add(wallet: Wallet, currency: Currency, amount: BigDecimal): Unit = ()
+  override def subtract(exchange: Exchange, currency: Currency, amount: BigDecimal): Unit = ()
+  override def add(exchange: Exchange, currency: Currency, amount: BigDecimal): Unit = ()
 }
 
 class CashedBalancesContainerWithFallback extends BalancesContainer {
@@ -56,45 +56,45 @@ class CashedBalancesContainerWithFallback extends BalancesContainer {
 
   def prefillCache(exchange: Exchange*): Unit = container.prefillCache(exchange: _*)
 
-  override def getBalance(wallet: Wallet, currency: Currency): Option[Balance] = {
-    container.getBalance(wallet, currency).orElse(toExchange.getBalance(wallet, currency))
+  override def getBalance(exchange: Exchange, currency: Currency): Option[Balance] = {
+    container.getBalance(exchange, currency).orElse(toExchange.getBalance(exchange, currency))
   }
 
-  def setBalance(wallet: Wallet, currency: Currency, balance: Balance): Unit =
-    container.setBalance(wallet, currency, balance)
+  def setBalance(exchange: Exchange, currency: Currency, balance: Balance): Unit =
+    container.setBalance(exchange, currency, balance)
 
-  override def subtract(wallet: Wallet, currency: Currency, amount: BigDecimal): Unit =
-    container.subtract(wallet, currency, amount)
+  override def subtract(exchange: Exchange, currency: Currency, amount: BigDecimal): Unit =
+    container.subtract(exchange, currency, amount)
 
-  override def add(wallet: Wallet, currency: Currency, amount: BigDecimal): Unit =
-    container.add(wallet, currency, amount)
+  override def add(exchange: Exchange, currency: Currency, amount: BigDecimal): Unit =
+    container.add(exchange, currency, amount)
 }
 
 class CashedBalancesContainer extends BalancesContainer {
-  private val cache: mutable.Map[(Wallet, Currency), Balance] = mutable.Map()
+  private val cache: mutable.Map[(Exchange, Currency), Balance] = mutable.Map()
 
   def prefillCache(exchange: Exchange*): Unit = {
     exchange.foreach(exchange => {
       val wallet = exchange.getAccountService.getAccountInfo.getWallet
       val balances = wallet.getBalances.asScala
-      balances.foreach(x => cache.put((wallet, x._1), x._2))
+      balances.foreach(x => cache.put((exchange, x._1), x._2))
     })
   }
 
-  override def getBalance(wallet: Wallet, currency: Currency): Option[Balance] = {
-    cache.get((wallet, currency))
+  override def getBalance(exchange: Exchange, currency: Currency): Option[Balance] = {
+    cache.get((exchange, currency))
   }
 
-  def setBalance(wallet: Wallet, currency: Currency, balance: Balance): Unit = cache.put((wallet, currency), balance)
+  def setBalance(exchange: Exchange, currency: Currency, balance: Balance): Unit = cache.put((exchange, currency), balance)
 
-  override def subtract(wallet: Wallet, currency: Currency, amount: BigDecimal): Unit = {
-    val balance = getBalance(wallet, currency)
-    cache.put((wallet, currency), new Balance(currency, balance.getOrElse(new Balance(currency, BigDecimal(0).bigDecimal)).getTotal.subtract(amount.bigDecimal)))
+  override def subtract(exchange: Exchange, currency: Currency, amount: BigDecimal): Unit = {
+    val balance = getBalance(exchange, currency)
+    cache.put((exchange, currency), new Balance(currency, balance.getOrElse(new Balance(currency, BigDecimal(0).bigDecimal)).getTotal.subtract(amount.bigDecimal)))
   }
 
-  override def add(wallet: Wallet, currency: Currency, amount: BigDecimal): Unit = {
-    val balance = getBalance(wallet, currency)
-    cache.put((wallet, currency), new Balance(currency, balance.getOrElse(new Balance(currency, BigDecimal(0).bigDecimal)).getTotal.add(amount.bigDecimal)))
+  override def add(exchange: Exchange, currency: Currency, amount: BigDecimal): Unit = {
+    val balance = getBalance(exchange, currency)
+    cache.put((exchange, currency), new Balance(currency, balance.getOrElse(new Balance(currency, BigDecimal(0).bigDecimal)).getTotal.add(amount.bigDecimal)))
   }
 }
 
@@ -103,6 +103,7 @@ class ArbitrageStrategy(val detector: ArbitrageDetector,
                         val withdrawalFeesStatic: Map[(Exchange, Currency), BigDecimal],
                         val balances: BalancesContainer = new DirectToExchangeBalancesContainer,
                         val paperTrade: Boolean = true,
+                        val transferTime: Duration = 1 hour,
                         val priceSlackPercentage: BigDecimal = 0.002)
                        (implicit scheduler: Scheduler = Schedulers.computation()) {
 
@@ -110,22 +111,30 @@ class ArbitrageStrategy(val detector: ArbitrageDetector,
   private val state: mutable.Map[CurrencyPair, State] = mutable.Map()
 
   def start(): Observable[ArbitrageTrade] = {
+    logger.info(s"Starting arbitrage strategy(paper=${paperTrade}, priceSlackPercentage=${priceSlackPercentage})")
+
     detector.detect()
       .filter(arbitrageTrade => this.state.getOrElse(arbitrageTrade.currencyPair, Available) == Available)
       .doOnEach(x => this.state.put(x.currencyPair, VerifyingDetection))
       .map(this.buildTrade)
+      .doOnEach(x => this.logBeforeTrade(x))
       .map(this.trade)
       .doOnEach(x => this.state.put(x.trade.arbitrage.currencyPair, Trading))
+      .doOnEach(x => this.logTrade(x))
       .flatMap(a => Observable.timer(5 seconds).map(_ => a))
       .map(this.checkTrades)
       .doOnEach { x => this.state.put(x.arbitrage.currencyPair, TradeDone) }
       .doOnEach { x => this.updateBalancesForTrade(x) }
+      .doOnEach(x => this.logAfterTrade(x))
       .map(this.exchangeCurrencies)
       .doOnEach { x => this.updateBalancesStartExchange(x) }
+      .doOnEach(x => this.logAfterExchangeStart(x))
       .doOnEach { x => this.state.put(x.trade.arbitrage.currencyPair, Exchanging) }
-      .flatMap(x => Observable.timer(1 hour).map(_ => x))
+      .flatMap(x => Observable.timer(transferTime).map(_ => x))
       .doOnEach { x => this.updateBalancesEndExchange(x) }
+      .doOnEach(x => this.logAfterExchangeEnd(x))
       .doOnEach { x => this.state.put(x.trade.arbitrage.currencyPair, Available) }
+      .doOnEach { _ => logger.info("Exchange done") }
       .map(_.trade)
   }
 
@@ -169,14 +178,52 @@ class ArbitrageStrategy(val detector: ArbitrageDetector,
   }
 
   private def trade(trade: ArbitrageTrade): InTrade = {
-    logger.info(s"Trading ${trade.buyOrder.getCurrencyPair}")
-    logger.debug(s"Buy order ${trade.buyOrder}, buy on ${trade.buyFrom}")
-    logger.debug(s"Sell order ${trade.sellOrder}, sell on ${trade.sellFrom}")
-
     val buyOrderId = if (paperTrade) "paper" else getTradeService(trade.buyFrom).placeLimitOrder(trade.buyOrder)
     val sellOrderId = if (paperTrade) "paper" else getTradeService(trade.sellFrom).placeLimitOrder(trade.sellOrder)
 
     InTrade(buyOrderId, sellOrderId, trade)
+  }
+
+  private def logTrade(trade: InTrade): Unit = {
+    logger.info(s"Trading ${trade.trade.buyOrder.getCurrencyPair}")
+    logger.debug(s"Buy order ${trade.trade.buyOrder}, buy on ${trade.trade.buyFrom}")
+    logger.debug(s"Sell order ${trade.trade.sellOrder}, sell on ${trade.trade.sellFrom}")
+  }
+
+  private def logBeforeTrade(arbitrageTrade: ArbitrageTrade): Unit = {
+    val base = arbitrageTrade.buyOrder.getCurrencyPair.base
+    val counter = arbitrageTrade.buyOrder.getCurrencyPair.counter
+
+    val exchange1 = arbitrageTrade.buyFrom
+    val exchange2 = arbitrageTrade.sellFrom
+
+    logger.info(s"Balance before trade. ${exchange1}: ${base.getSymbol}: ${this.balances.getBalance(exchange1, base).get.getAvailable}, ${counter.getSymbol}: ${this.balances.getBalance(exchange1, counter).get.getAvailable}")
+    logger.info(s"Balance before trade. ${exchange2}: ${base.getSymbol}: ${this.balances.getBalance(exchange2, base).get.getAvailable}, ${counter.getSymbol}: ${this.balances.getBalance(exchange2, counter).get.getAvailable}")
+  }
+
+  private def logAfterTrade(arbitrageTrade: ArbitrageTrade): Unit = {
+    val base = arbitrageTrade.buyOrder.getCurrencyPair.base
+    val counter = arbitrageTrade.buyOrder.getCurrencyPair.counter
+
+    val exchange1 = arbitrageTrade.buyFrom
+    val exchange2 = arbitrageTrade.sellFrom
+
+    logger.info(s"Balance after trade. ${exchange1}: ${base.getSymbol}: ${this.balances.getBalance(exchange1, base).get.getAvailable}, ${counter.getSymbol}: ${this.balances.getBalance(exchange1, counter).get.getAvailable}")
+    logger.info(s"Balance after trade. ${exchange2}: ${base.getSymbol}: ${this.balances.getBalance(exchange2, base).get.getAvailable}, ${counter.getSymbol}: ${this.balances.getBalance(exchange2, counter).get.getAvailable}")
+  }
+
+  private def logAfterExchangeStart(exchanging: Exchanging): Unit = {
+    }
+
+  private def logAfterExchangeEnd(exchanging: Exchanging): Unit = {
+    val base = exchanging.trade.buyOrder.getCurrencyPair.base
+    val counter = exchanging.trade.buyOrder.getCurrencyPair.counter
+
+    val exchange1 = exchanging.trade.buyFrom
+    val exchange2 = exchanging.trade.sellFrom
+
+    logger.info(s"Balance after exchange. ${exchange1}: ${base.getSymbol}: ${this.balances.getBalance(exchange1, base).get.getAvailable}, ${counter.getSymbol}: ${this.balances.getBalance(exchange1, counter).get.getAvailable}")
+    logger.info(s"Balance after exchange. ${exchange2}: ${base.getSymbol}: ${this.balances.getBalance(exchange2, base).get.getAvailable}, ${counter.getSymbol}: ${this.balances.getBalance(exchange2, counter).get.getAvailable}")
   }
 
   private def checkTrades(inTrade: InTrade) = {
@@ -200,12 +247,12 @@ class ArbitrageStrategy(val detector: ArbitrageDetector,
 
   private def exchangeCurrencies(trade: ArbitrageTrade) = {
     val pair = trade.sellOrder.getCurrencyPair
-    val baseAmount = availableBalance(trade.buyFrom, pair.base)
-    val counterAmount = availableBalance(trade.sellFrom, pair.counter)
 
+    val baseAmount = availableBalance(trade.buyFrom, pair.base)
     val baseWithdrawalFee = withdrawalFeesStatic((trade.buyFrom, pair.base))
     val baseWithdrawalAmount = (baseAmount + baseWithdrawalFee) / 2
 
+    val counterAmount = availableBalance(trade.sellFrom, pair.counter)
     val counterWithdrawalFee = withdrawalFeesStatic((trade.sellFrom, pair.counter))
     val counterWithdrawalAmount = (counterAmount + counterWithdrawalFee) / 2
 
@@ -221,29 +268,29 @@ class ArbitrageStrategy(val detector: ArbitrageDetector,
   }
 
   protected def availableBalance(exchange: Exchange, currency: Currency): BigDecimal =
-    BigDecimal(balances.getBalance(exchange.getAccountService.getAccountInfo.getWallet, currency).map(_.getAvailable).getOrElse(BigDecimal(0).bigDecimal))
+    BigDecimal(balances.getBalance(exchange, currency).map(_.getAvailable).getOrElse(BigDecimal(0).bigDecimal))
 
   private def updateBalancesForTrade(tradeDone: ArbitrageTrade): Unit = {
     val buyFee = tradeFeesPercent(tradeDone.buyFrom, tradeDone.arbitrage.currencyPair) * (tradeDone.buyAmount * tradeDone.buyOrder.getLimitPrice)
-    balances.add(tradeDone.buyFrom.getAccountService.getAccountInfo.getWallet, tradeDone.arbitrage.currencyPair.base, tradeDone.buyAmount )
-    balances.subtract(tradeDone.buyFrom.getAccountService.getAccountInfo.getWallet, tradeDone.arbitrage.currencyPair.counter, tradeDone.buyAmount * tradeDone.buyOrder.getLimitPrice + buyFee)
+    balances.add(tradeDone.buyFrom, tradeDone.arbitrage.currencyPair.base, tradeDone.buyAmount )
+    balances.subtract(tradeDone.buyFrom, tradeDone.arbitrage.currencyPair.counter, tradeDone.buyAmount * tradeDone.buyOrder.getLimitPrice + buyFee)
 
     val sellFee = tradeFeesPercent(tradeDone.sellFrom, tradeDone.arbitrage.currencyPair) * (tradeDone.sellAmount / tradeDone.sellOrder.getLimitPrice)
-    balances.subtract(tradeDone.sellFrom.getAccountService.getAccountInfo.getWallet, tradeDone.arbitrage.currencyPair.base, tradeDone.sellAmount)
-    balances.add(tradeDone.sellFrom.getAccountService.getAccountInfo.getWallet, tradeDone.arbitrage.currencyPair.counter, tradeDone.sellAmount / tradeDone.sellOrder.getLimitPrice - sellFee)
+    balances.subtract(tradeDone.sellFrom, tradeDone.arbitrage.currencyPair.base, tradeDone.sellAmount)
+    balances.add(tradeDone.sellFrom, tradeDone.arbitrage.currencyPair.counter, tradeDone.sellAmount * tradeDone.sellOrder.getLimitPrice - sellFee)
   }
 
   private def updateBalancesStartExchange(exchanging: Exchanging): Unit = {
-    balances.subtract(exchanging.trade.buyFrom.getAccountService.getAccountInfo.getWallet, exchanging.trade.arbitrage.currencyPair.base, exchanging.baseAmount)
-    balances.subtract(exchanging.trade.sellFrom.getAccountService.getAccountInfo.getWallet, exchanging.trade.arbitrage.currencyPair.counter, exchanging.counterAmount)
+    balances.subtract(exchanging.trade.buyFrom, exchanging.trade.arbitrage.currencyPair.base, exchanging.baseAmount)
+    balances.subtract(exchanging.trade.sellFrom, exchanging.trade.arbitrage.currencyPair.counter, exchanging.counterAmount)
   }
 
   private def updateBalancesEndExchange(exchanging: Exchanging): Unit = {
     val baseFee = withdrawalFeesStatic((exchanging.trade.buyFrom, exchanging.trade.arbitrage.currencyPair.base))
-    balances.add(exchanging.trade.sellFrom.getAccountService.getAccountInfo.getWallet, exchanging.trade.arbitrage.currencyPair.base, exchanging.baseAmount - baseFee)
+    balances.add(exchanging.trade.sellFrom, exchanging.trade.arbitrage.currencyPair.base, exchanging.baseAmount - baseFee)
 
     val counterFee = withdrawalFeesStatic((exchanging.trade.sellFrom, exchanging.trade.arbitrage.currencyPair.counter))
-    balances.add(exchanging.trade.buyFrom.getAccountService.getAccountInfo.getWallet, exchanging.trade.arbitrage.currencyPair.counter, exchanging.counterAmount - counterFee)
+    balances.add(exchanging.trade.buyFrom, exchanging.trade.arbitrage.currencyPair.counter, exchanging.counterAmount - counterFee)
   }
 
   private def getAccountService(exchange: Exchange): AccountService = exchange.getAccountService

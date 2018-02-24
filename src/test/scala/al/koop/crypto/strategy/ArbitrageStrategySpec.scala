@@ -76,10 +76,10 @@ class ArbitrageStrategySpec extends FlatSpec with Matchers with MockitoSugar {
   when(detector.detect()).thenReturn(Observable.just(DetectedArbitrage(LocalDateTime.now(), pair, ask = 0.5, buyExchange, bid = 1, sellExchange, difference = 2)))
 
   val balances = new CashedBalancesContainer()
-  balances.setBalance(buyExchange.getAccountService.getAccountInfo.getWallet, counter, new Balance(counter, BigDecimal(50).bigDecimal))
-  balances.setBalance(buyExchange.getAccountService.getAccountInfo.getWallet, base, new Balance(base, BigDecimal(50).bigDecimal))
-  balances.setBalance(sellExchange.getAccountService.getAccountInfo.getWallet, counter, new Balance(counter, BigDecimal(50).bigDecimal))
-  balances.setBalance(sellExchange.getAccountService.getAccountInfo.getWallet, base, new Balance(base, BigDecimal(50).bigDecimal))
+  balances.setBalance(buyExchange, counter, new Balance(counter, BigDecimal(50).bigDecimal))
+  balances.setBalance(buyExchange, base, new Balance(base, BigDecimal(50).bigDecimal))
+  balances.setBalance(sellExchange, counter, new Balance(counter, BigDecimal(50).bigDecimal))
+  balances.setBalance(sellExchange, base, new Balance(base, BigDecimal(50).bigDecimal))
 
   val tradeFees: Map[(Exchange, CurrencyPair), BigDecimal] = Map(
     (buyExchange, pair) -> 0.1,
@@ -91,7 +91,7 @@ class ArbitrageStrategySpec extends FlatSpec with Matchers with MockitoSugar {
     (sellExchange, counter) -> 10,
   )
 
-  val strategy = new ArbitrageStrategy(detector, tradeFees, withdrawalFees, balances, paperTrade = false, 0)
+  val strategy = new ArbitrageStrategy(detector, tradeFees, withdrawalFees, balances, paperTrade = false, priceSlackPercentage = 0)
 
   RxJavaHooks.setOnComputationScheduler(_ => () => new Scheduler.Worker {
       override def schedule(action: Action0): Subscription = {
@@ -109,9 +109,9 @@ class ArbitrageStrategySpec extends FlatSpec with Matchers with MockitoSugar {
       .toBlocking
       .single
 
-    balances.getBalance(buyExchange.getAccountService.getAccountInfo.getWallet, base).get.getAvailable.doubleValue() shouldBe 65.45454545454545
-    balances.getBalance(buyExchange.getAccountService.getAccountInfo.getWallet, counter).get.getAvailable.doubleValue() shouldBe 42.5
-    balances.getBalance(sellExchange.getAccountService.getAccountInfo.getWallet, counter).get.getAvailable.doubleValue() shouldBe 42.5
-    balances.getBalance(sellExchange.getAccountService.getAccountInfo.getWallet, base).get.getAvailable.doubleValue() shouldBe 65.45454545454545
+    balances.getBalance(buyExchange, base).get.getAvailable.doubleValue() shouldBe 65.45454545454545
+    balances.getBalance(buyExchange, counter).get.getAvailable.doubleValue() shouldBe 42.5
+    balances.getBalance(sellExchange, counter).get.getAvailable.doubleValue() shouldBe 42.5
+    balances.getBalance(sellExchange, base).get.getAvailable.doubleValue() shouldBe 65.45454545454545
   }
 }
