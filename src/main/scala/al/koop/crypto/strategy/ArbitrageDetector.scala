@@ -26,14 +26,14 @@ trait ArbitrageDetector {
   def detect(): Observable[DetectedArbitrage]
 
   def priceDiff(price1: BigDecimal, price2: BigDecimal): BigDecimal = {
-    (price1 - price2) / price2
+    ((price1 - price2) / price2).setScale(4,BigDecimal.RoundingMode.CEILING)
   }
 }
 
 class SingleCurrencyArbitrageDetector(val currencyPair: CurrencyPair,
                                       val exchange1: Exchange,
                                       val exchange2: Exchange,
-                                      val diff: BigDecimal = 0.05,
+                                      val diff: BigDecimal,
                                       val pollInterval: Duration = 1 second) extends ArbitrageDetector {
   private val logger = LoggerFactory.getLogger(getClass)
 
@@ -63,7 +63,7 @@ class SingleCurrencyArbitrageDetector(val currencyPair: CurrencyPair,
     val priceDiff1 = priceDiff(t1._1.getBid, t2._1.getAsk)
     val priceDiff2 = priceDiff(t2._1.getBid, t1._1.getAsk)
 
-//    logger.debug(s"Checking pair $pair, ask=${t1._1.getAsk}/bid=${t1._1.getBid} on ${t1._2.getExchangeSpecification.getExchangeName}; ask=${t2._1.getAsk}/bid=${t2._1.getBid} on ${t2._2.getExchangeSpecification.getExchangeName}. Differences: $priceDiff1 and $priceDiff2")
+    logger.debug(s"Checking pair $pair, ask=${t1._1.getAsk}/bid=${t1._1.getBid} on ${t1._2.getExchangeSpecification.getExchangeName}; ask=${t2._1.getAsk}/bid=${t2._1.getBid} on ${t2._2.getExchangeSpecification.getExchangeName}. Differences: $priceDiff1 and $priceDiff2")
 
     if (priceDiff1 >= diff)
       Some(DetectedArbitrage(now(), pair, ask = t2._1.getAsk, buyFrom = t2._2, bid = t1._1.getBid, sellFrom = t1._2, priceDiff1))
@@ -79,7 +79,7 @@ class SingleCurrencyArbitrageDetector(val currencyPair: CurrencyPair,
 class SimulatedSingleCurrencyArbitrageDetector(currencyPair: CurrencyPair,
                                                exchange1: Exchange,
                                                exchange2: Exchange,
-                                               diff: BigDecimal = 0.05) extends SingleCurrencyArbitrageDetector(currencyPair, exchange1, exchange2, diff, 0 seconds) {
+                                               diff: BigDecimal) extends SingleCurrencyArbitrageDetector(currencyPair, exchange1, exchange2, diff, 0 seconds) {
   val basePrice = BigDecimal(0.12)
   override def detect(): Observable[DetectedArbitrage] = {
     val ticker1 = Observable.interval(1 seconds)
@@ -95,7 +95,7 @@ class SimulatedSingleCurrencyArbitrageDetector(currencyPair: CurrencyPair,
     val ticker2 = Observable.interval(1 seconds)
       .map(_ => {
         val ticker = new Ticker.Builder()
-          .ask((basePrice / 1.05).bigDecimal)
+          .ask((basePrice / (1 + diff)).bigDecimal)
           .bid(basePrice.bigDecimal)
           .currencyPair(currencyPair)
           .build()
@@ -112,7 +112,7 @@ class SimulatedSingleCurrencyArbitrageDetector(currencyPair: CurrencyPair,
 class MultiCurrencyArbitrageDetector(val exchange1: Exchange,
                                      val exchange2: Exchange,
                                      val pairs: Set[CurrencyPair],
-                                     val diff: BigDecimal = 0.05) extends ArbitrageDetector {
+                                     val diff: BigDecimal) extends ArbitrageDetector {
   private val set1 = exchange1.getExchangeSymbols.asScala.to[Set]
   private val set2 = exchange2.getExchangeSymbols.asScala.to[Set]
 
@@ -130,7 +130,7 @@ class MultiCurrencyArbitrageDetector(val exchange1: Exchange,
 class AllCurrencyArbitrageDetector(val counter: Currency,
                                    val exchange1: Exchange,
                                    val exchange2: Exchange,
-                                   val diff: BigDecimal = 0.05) extends ArbitrageDetector {
+                                   val diff: BigDecimal) extends ArbitrageDetector {
   private val set1 = exchange1.getExchangeSymbols.asScala.to[Set]
   private val set2 = exchange2.getExchangeSymbols.asScala.to[Set]
   private val pairs = set1.intersect(set2)

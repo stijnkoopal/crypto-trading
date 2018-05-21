@@ -275,7 +275,7 @@ class ArbitrageStrategy(val detector: ArbitrageDetector,
     balances.add(tradeDone.buyFrom, tradeDone.arbitrage.currencyPair.base, tradeDone.buyAmount )
     balances.subtract(tradeDone.buyFrom, tradeDone.arbitrage.currencyPair.counter, tradeDone.buyAmount * tradeDone.buyOrder.getLimitPrice + buyFee)
 
-    val sellFee = tradeFeesPercent(tradeDone.sellFrom, tradeDone.arbitrage.currencyPair) * (tradeDone.sellAmount / tradeDone.sellOrder.getLimitPrice)
+    val sellFee = tradeFeesPercent(tradeDone.sellFrom, tradeDone.arbitrage.currencyPair) * (tradeDone.sellAmount * tradeDone.sellOrder.getLimitPrice)
     balances.subtract(tradeDone.sellFrom, tradeDone.arbitrage.currencyPair.base, tradeDone.sellAmount)
     balances.add(tradeDone.sellFrom, tradeDone.arbitrage.currencyPair.counter, tradeDone.sellAmount * tradeDone.sellOrder.getLimitPrice - sellFee)
   }

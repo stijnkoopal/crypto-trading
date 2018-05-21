@@ -31,7 +31,7 @@ class SingleCurrencyArbitrageDetectorSpec extends FlatSpec with Matchers with Mo
   when(exchange2Mock.getAccountService).thenReturn(accountServiceMock)
   when(exchange2Mock.getExchangeSpecification).thenReturn(specificationMock)
 
-  val arbitrageDetector = new SingleCurrencyArbitrageDetector(pair, exchange1Mock, exchange2Mock)
+  val arbitrageDetector = new SingleCurrencyArbitrageDetector(pair, exchange1Mock, exchange2Mock, 0.05)
 
   "isValidTrade" should "give no trade when bid < ask" in {
     val ticker1 = ticker(pair, bid = 100, ask = 120)
